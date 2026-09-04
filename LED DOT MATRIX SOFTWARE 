@@ -1,0 +1,164 @@
+#include <MD_Parola.h>
+#include <MD_MAX72xx.h>
+#include <SPI.h>
+#include "BluetoothSerial.h"
+#include <Preferences.h>
+
+BluetoothSerial SerialBT;
+Preferences preferences;
+
+#define HARDWARE_TYPE MD_MAX72XX::FC16_HW
+#define MAX_DEVICES 8
+#define CLK_PIN   18
+#define DATA_PIN  23
+#define CS_PIN    5
+
+MD_Parola display = MD_Parola(HARDWARE_TYPE, DATA_PIN, CLK_PIN, CS_PIN, MAX_DEVICES);
+
+// Custom Bold Font
+const uint8_t PROGMEM boldFont[] = {
+  0, ' ', 'Z', 0,
+  1, 0x00, 3, 0x00, 0x5F, 0x00, 5, 0x07, 0x07, 0x00, 0x07, 0x07,
+  6, 0x3E, 0x7F, 0x41, 0x41, 0x7F, 0x3E, // 0
+  4, 0x42, 0x7F, 0x7F, 0x40,             // 1
+  6, 0x7E, 0x7F, 0x13, 0x13, 0x7F, 0x7E, // A
+  6, 0x7F, 0x7F, 0x49, 0x49, 0x7F, 0x36, // B
+  6, 0x3E, 0x7F, 0x41, 0x41, 0x63, 0x22  // C
+};
+
+String incomingText = "WELCOME";
+String companyName = "SUHAJO ARTS";
+int scrollSpeed = 45;
+int brightness = 5;
+int currentFont = 0;
+int currentEffect = 0;
+bool isWelcomeDone = false;
+
+textEffect_t effectList[] = {
+  PA_SCROLL_LEFT,
+  PA_SCROLL_RIGHT,
+  PA_WIPE,
+  PA_SLICE,
+  PA_OPENING_CURSOR,
+  PA_BLINDS
+};
+
+void setFontMode(int mode) {
+  if (mode == 1) {
+    display.setFont(boldFont);
+    Serial.println("[FONT] Applied: Bold Font");
+  } else {
+    display.setFont(nullptr);
+    Serial.println("[FONT] Applied: Default Font");
+  }
+}
+
+void setup() {
+  Serial.begin(115200);
+  delay(1000); // सीरियल शुरू होने के लिए थोड़ा समय
+  Serial.println("\n--- SYSTEM BOOTING ---");
+
+  // ब्लूटूथ शुरू करें
+  if (SerialBT.begin("SUHAJO ARTS")) {
+    Serial.println("[BT] Bluetooth Started as: SUHAJO ARTS");
+  } else {
+    Serial.println("[BT ERROR] Failed to initialize Bluetooth!");
+  }
+
+  // मेमोरी से डेटा लोड करें
+  preferences.begin("led_store", false);
+  incomingText = preferences.getString("text", "WELCOME");
+  companyName = preferences.getString("comp", "SUHAJO ARTS");
+  scrollSpeed = preferences.getInt("spd", 45);
+  brightness = preferences.getInt("brt", 5);
+  currentFont = preferences.getInt("fnt", 0);
+  currentEffect = preferences.getInt("eff", 0);
+
+  Serial.println("[MEMORY] Loaded Settings:");
+  Serial.println(" -> Company: " + companyName);
+  Serial.println(" -> Text: " + incomingText);
+  Serial.println(" -> Speed: " + String(scrollSpeed));
+  Serial.println(" -> Brightness: " + String(brightness));
+  Serial.println(" -> Font: " + String(currentFont));
+  Serial.println(" -> Effect Index: " + String(currentEffect));
+
+  display.begin();
+  display.setIntensity(brightness);
+  display.displayClear();
+  setFontMode(currentFont);
+
+  Serial.println("[DISPLAY] Playing Company Name: " + companyName);
+  display.displayScroll(companyName.c_str(), PA_CENTER, PA_SCROLL_LEFT, scrollSpeed);
+  Serial.println("--- READY & LISTENING FOR BLUETOOTH DATA ---\n");
+}
+
+void loop() {
+  if (SerialBT.available()) {
+    String msg = SerialBT.readStringUntil('\n');
+    msg.trim();
+
+    if (msg.length() > 0) {
+      Serial.print("[DATA RECEIVED] Raw: \"");
+      Serial.print(msg);
+      Serial.println("\"");
+
+      if (msg.startsWith("TXT:")) {
+        incomingText = msg.substring(4);
+        preferences.putString("text", incomingText);
+        isWelcomeDone = true;
+        Serial.println(" -> Action: Moving Text updated to -> " + incomingText);
+        display.displayText(incomingText.c_str(), PA_CENTER, scrollSpeed, 1000, effectList[currentEffect], effectList[currentEffect]);
+      }
+      else if (msg.startsWith("COMP:")) {
+        companyName = msg.substring(5);
+        preferences.putString("comp", companyName);
+        Serial.println(" -> Action: Startup Company Name saved as -> " + companyName);
+      }
+      else if (msg.startsWith("SPD:")) {
+        scrollSpeed = msg.substring(4).toInt();
+        preferences.putInt("spd", scrollSpeed);
+        display.setSpeed(scrollSpeed);
+        Serial.println(" -> Action: Scroll Speed set to -> " + String(scrollSpeed));
+      }
+      else if (msg.startsWith("BRT:")) {
+        brightness = msg.substring(4).toInt();
+        preferences.putInt("brt", brightness);
+        display.setIntensity(brightness);
+        Serial.println(" -> Action: Brightness set to -> " + String(brightness));
+      }
+      else if (msg.startsWith("FNT:")) {
+        currentFont = msg.substring(4).toInt();
+        preferences.putInt("fnt", currentFont);
+        setFontMode(currentFont);
+        display.displayReset();
+        Serial.println(" -> Action: Font changed to -> " + String(currentFont));
+      }
+      else if (msg.startsWith("EFF:")) {
+        currentEffect = msg.substring(4).toInt();
+        if (currentEffect >= 6) currentEffect = 0;
+        preferences.putInt("eff", currentEffect);
+        display.setTextEffect(effectList[currentEffect], effectList[currentEffect]);
+        display.displayReset();
+        Serial.println(" -> Action: Effect set to index -> " + String(currentEffect));
+      }
+      else {
+        // अगर ऐप ने बिना किसी प्रीफिक्स (सीधा टेक्स्ट) भेजा हो
+        incomingText = msg;
+        preferences.putString("text", incomingText);
+        isWelcomeDone = true;
+        Serial.println(" -> Action: Generic Text updated to -> " + incomingText);
+        display.displayText(incomingText.c_str(), PA_CENTER, scrollSpeed, 1000, effectList[currentEffect], effectList[currentEffect]);
+      }
+    }
+  }
+
+  if (display.displayAnimate()) {
+    if (!isWelcomeDone) {
+      isWelcomeDone = true;
+      Serial.println("[DISPLAY] Company intro finished. Switching to saved loop text.");
+      display.displayText(incomingText.c_str(), PA_CENTER, scrollSpeed, 1000, effectList[currentEffect], effectList[currentEffect]);
+    } else {
+      display.displayReset();
+    }
+  }
+}
